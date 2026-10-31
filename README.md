@@ -9,6 +9,8 @@
 - `skills/screen-genie/references/mcp-setup.md`：把手机内置 MCP 服务接入 Agent 宿主的完整步骤，含端口归属与 ADB 转发。
 - `skills/screen-genie/references/preview.md`：查看虚拟屏画面的方式，单帧截图、scrcpy 镜像与限制。
 - `skills/screen-genie/scripts/mcp_proxy_stdlib.py`：零依赖的 MCP 规范化代理，仅用 Python 标准库，适配 Termux。
+- `skills/screen-genie/scripts/collect_contract.py`：采集上游工具定义与受控调用样本，默认只读。
+- `skills/screen-genie/scripts/tests/test_proxy.py`：代理回归测试，本地模拟上游，不连接手机。
 
 ## 安装与文件结构
 
@@ -47,6 +49,17 @@ screen-genie-plugin/
 
 ## 产物校验
 
-完整包共 7 个文件：`plugin.json`、`README.md`、`skills/screen-genie/SKILL.md`、`references/` 下的 `tools.md`、`mcp-setup.md`、`preview.md`，以及 `scripts/mcp_proxy_stdlib.py`。
+完整包应包含 `plugin.json`、`README.md`、`skills/screen-genie/SKILL.md`，以及 `references/`、`scripts/` 两个目录。
 
-只拿到一个无扩展名文件，或没有 `references/` 目录，说明拿到的是残件，宿主不会加载，需要重新取完整包。
+只拿到一个无扩展名文件，或缺少 `references/`、`scripts/`，说明拿到的是残件，宿主不会加载，需要重新取完整包。用 `git ls-files` 或仓库页面核对文件清单，不依赖固定的文件数。
+
+## 契约采集
+
+连接手机后，先采集工具定义，再修改依赖参数或默认行为的规则：
+
+```bash
+MCP_URL=http://127.0.0.1:8765/mcp MCP_TOKEN='<令牌>' \
+  python3 skills/screen-genie/scripts/collect_contract.py --out contract.json
+```
+
+默认只做 initialize 和 tools/list，不调用业务工具。需要某个工具的真实返回时，显式加 `--call <工具名> --args '<JSON>'`。令牌只从环境变量读取，不写入输出文件。
