@@ -150,6 +150,16 @@ def normalize_response(obj: dict) -> dict:
     return obj
 
 
+def _hget(headers, name: str) -> str:
+    """HTTP 头名不区分大小写。兼容 email.message.Message、dict 和任意 Mapping。"""
+    target = name.lower()
+    items = headers.items() if hasattr(headers, "items") else []
+    for k, v in items:
+        if str(k).lower() == target:
+            return v or ""
+    return ""
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -167,18 +177,20 @@ class Handler(BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
-    def _relay(self, payload: bytes, headers: dict) -> tuple[int, bytes, str, dict]:
+    def _relay(self, payload: bytes, headers, auth_override: str = "") -> tuple[int, bytes, str, dict]:
         conn = http.client.HTTPConnection(UP_HOST, UP_PORT, timeout=TIMEOUT)
+        # 头名不区分大小写，统一用 _hget 读取，不先转成普通 dict 再按原样键取
         hdrs = {
-            "Content-Type": headers.get("Content-Type", "application/json"),
+            "Content-Type": _hget(headers, "Content-Type") or "application/json",
             # 凭证优先由客户端提供，原样透传；仅本机模式才用环境变量代填
-            "Authorization": headers.get("Authorization", ""),
-            "Accept": headers.get("Accept", "application/json"),
+            "Authorization": _hget(headers, "Authorization") or auth_override,
+            "Accept": _hget(headers, "Accept") or "application/json",
         }
         # 会话与协议头必须原样透传，否则 initialize 之后的上游调用会丢失会话
         for k in ("Mcp-Session-Id", "MCP-Protocol-Version"):
-            if headers.get(k):
-                hdrs[k] = headers[k]
+            v = _hget(headers, k)
+            if v:
+                hdrs[k] = v
         try:
             conn.request("POST", UP_PATH, body=payload, headers=hdrs)
             r = conn.getresponse()
@@ -198,10 +210,10 @@ class Handler(BaseHTTPRequestHandler):
         payload = self.rfile.read(length) if length else b""
 
         # 凭证优先由客户端提供并原样透传；本机模式下可用 MCP_API_KEY 代填
-        request_headers = dict(self.headers)
-        if not request_headers.get("Authorization"):
+        auth_override = ""
+        if not _hget(self.headers, "Authorization"):
             if MCP_API_KEY:
-                request_headers["Authorization"] = f"Bearer {MCP_API_KEY}"
+                auth_override = f"Bearer {MCP_API_KEY}"
             else:
                 body = json.dumps(
                     {"jsonrpc": "2.0", "id": None,
@@ -213,23 +225,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(401, body, "application/json")
                 return
 
-        for attempt in (1, 2):
-            try:
-                status, data, ctype, extra = self._relay(payload, request_headers)
-            except Exception as e:  # noqa: BLE001
-                body = json.dumps(
-                    {"jsonrpc": "2.0", "id": None,
-                     "error": {"code": -32000, "message": f"upstream unreachable: {e}"}}
-                ).encode()
-                self._send(502, body, "application/json")
-                return
-            # 官方语义（仅 PIN/ENFORCE 开启时）：校验 X-Mcp-Nonce，不匹配 ->
-            # 重试一次（等价重新握手），仍不匹配 -> fail closed
-            if not _nonce_mismatch(extra.get("X-Mcp-Nonce")):
-                break
-            if attempt == 1 and not MCP_NONCE_PIN:
-                _reset_nonce()
-                continue
+        try:
+            status, data, ctype, extra = self._relay(payload, self.headers, auth_override)
+        except Exception as e:  # noqa: BLE001
+            body = json.dumps(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32000, "message": f"upstream unreachable: {e}"}}
+            ).encode()
+            self._send(502, body, "application/json")
+            return
+
+        # 身份校验失败：请求已经发到上游、可能已被执行，这里不重放。
+        # 只清掉 TOFU 学习值，让客户端重新握手后的下一次请求重新学习。
+        if _nonce_mismatch(extra.get("X-Mcp-Nonce")):
+            _reset_nonce()
             self._send(502, _IDENTITY_ERR, "application/json")
             return
 
