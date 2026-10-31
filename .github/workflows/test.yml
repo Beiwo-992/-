@@ -1,0 +1,20 @@
+name: screen-genie tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile
+        run: python3 -m py_compile skills/screen-genie/scripts/*.py skills/screen-genie/scripts/tests/*.py
+      - name: Proxy regression
+        run: python3 skills/screen-genie/scripts/tests/test_proxy.py
+      - name: Contract collector
+        run: python3 skills/screen-genie/scripts/tests/test_collector.py

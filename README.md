@@ -63,3 +63,28 @@ MCP_URL=http://127.0.0.1:8765/mcp MCP_TOKEN='<令牌>' \
 ```
 
 默认只做 initialize 和 tools/list，不调用业务工具。需要某个工具的真实返回时，显式加 `--call <工具名> --args '<JSON>'`。令牌只从环境变量读取，不写入输出文件。
+
+失败时会保存诊断并以非零退出码结束：`2` 认证/HTTP/JSON-RPC 错误，`3` 不支持 SSE，`4` 分页异常。不会把失败显示成「0 个工具」。
+
+## 工具白名单
+
+上游工具很多时，工具定义本身会占上下文。代理支持按需裁剪：
+
+```bash
+MCP_TOOL_ALLOWLIST=mdi_task_create,mdi_open_app,mdi_snapshot,mdi_click \
+  python3 skills/screen-genie/scripts/mcp_proxy_stdlib.py
+```
+
+- `tools/list` 只返回名单内的工具
+- 调用名单外的工具会被代理直接拒绝，请求不会发到上游
+- 不设置该变量时保持原样透传
+- 先在采集结果里看 `tool_definition_tokens_estimate`，再决定要不要裁剪
+
+## 测试
+
+```bash
+python3 skills/screen-genie/scripts/tests/test_proxy.py
+python3 skills/screen-genie/scripts/tests/test_collector.py
+```
+
+两组测试都用本地模拟上游，不连接手机、不发送消息。仓库里的 GitHub Actions 会自动执行这两组测试。

@@ -160,6 +160,47 @@ def _hget(headers, name: str) -> str:
     return ""
 
 
+# 可选工具白名单：只暴露当前连接需要的工具，减少工具定义占用的上下文。
+# 不设置时保持原样透传。
+TOOL_ALLOWLIST = {
+    t.strip()
+    for t in os.environ.get("MCP_TOOL_ALLOWLIST", "").split(",")
+    if t.strip()
+}
+
+
+def filter_tools(obj: dict) -> dict:
+    """按白名单裁剪 tools/list 结果；未配置时原样返回。"""
+    if not TOOL_ALLOWLIST:
+        return obj
+    result = obj.get("result")
+    if not isinstance(result, dict):
+        return obj
+    tools = result.get("tools")
+    if isinstance(tools, list):
+        result["tools"] = [
+            t for t in tools
+            if isinstance(t, dict) and t.get("name") in TOOL_ALLOWLIST
+        ]
+    return obj
+
+
+def disallowed_tool(payload: bytes) -> tuple[str, object] | None:
+    """返回 (被拒工具名, 请求 id)；不在白名单时才返回。"""
+    if not TOOL_ALLOWLIST:
+        return None
+    try:
+        obj = json.loads(payload)
+    except Exception:
+        return None
+    if not isinstance(obj, dict) or obj.get("method") != "tools/call":
+        return None
+    name = str((obj.get("params") or {}).get("name") or "")
+    if name and name not in TOOL_ALLOWLIST:
+        return name, obj.get("id")
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -209,6 +250,17 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         payload = self.rfile.read(length) if length else b""
 
+        denied = disallowed_tool(payload)
+        if denied:
+            name, req_id = denied
+            body = json.dumps({
+                "jsonrpc": "2.0", "id": req_id,
+                "error": {"code": -32601,
+                          "message": f"tool not allowed by MCP_TOOL_ALLOWLIST: {name}"},
+            }).encode()
+            self._send(200, body, "application/json")
+            return
+
         # 凭证优先由客户端提供并原样透传；本机模式下可用 MCP_API_KEY 代填
         auth_override = ""
         if not _hget(self.headers, "Authorization"):
@@ -245,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             obj = json.loads(data)
             obj = normalize_response(obj)
+            obj = filter_tools(obj)
             self._send(status, json.dumps(obj, ensure_ascii=False).encode(),
                        "application/json; charset=utf-8", extra)
         except Exception:
@@ -268,6 +321,8 @@ def main() -> int:
     print("[mcp-proxy] 已启用规范化：error:null / content 数组 / inputSchema / isError")
     if MCP_API_KEY:
         print("[mcp-proxy] 本机模式：客户端未带 Authorization 时，用 MCP_API_KEY 代填")
+    if TOOL_ALLOWLIST:
+        print(f"[mcp-proxy] 工具白名单已启用：{len(TOOL_ALLOWLIST)} 项")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
