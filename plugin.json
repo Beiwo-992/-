@@ -1,0 +1,9 @@
+{
+  "name": "screen-genie",
+  "description": "原子能力覆盖不到时，用 MDI 虚拟屏操作 Android 应用",
+  "includes": {
+    "plugins": [],
+    "connectors": []
+  },
+  "args": {}
+}
